@@ -1,0 +1,1392 @@
+openapi: 3.1.0
+info:
+  title: Estackly Storefront API
+  version: "2026-11"
+  summary: Build apps, headless storefronts and integrations on an Estackly store.
+  description: |
+    One host serves every store; the API key says which store a request is for.
+
+    **Keys** — created by the merchant in admin → Settings → Developers.
+    - Public keys (`esk_pub_…`) go in the `X-Estackly-Storefront-Token` header.
+      They are safe in app or browser code and can be limited to websites.
+    - Private keys (`esk_prv_…`) are sent as `Authorization: Bearer …` from a
+      server only. Webhooks need one.
+
+    **Money** is always integer minor units plus an ISO currency, with a
+    `formatted` string the way the store prints it. Pass `?currency=` (one of
+    the store's selling currencies) to see prices converted, exactly as on the
+    website.
+
+    **Errors** always have the shape `{"error": {"code", "message", "fields"?, "request_id"}}`.
+
+    **Rate limits**: public keys 10 req/s per IP (burst 40) and 60 req/s per
+    key (burst 200); private keys 100 req/s (burst 400). See the
+    `X-RateLimit-*` headers; a 429 carries `Retry-After`.
+
+    **Checkout** never happens in the API: ask for a checkout link and open it
+    in a browser; payment, tax and shipping run on the store's own checkout.
+  contact:
+    name: Estackly
+    url: https://estackly.com
+servers:
+  - url: https://api.estackly.com/storefront/v1
+security:
+  - publicKey: []
+  - privateKey: []
+tags:
+  - name: Key
+  - name: Catalogue
+  - name: Content
+  - name: Cart
+  - name: Checkout
+  - name: Customers
+  - name: Manage webhooks
+
+paths:
+  /key:
+    get:
+      tags: [Key]
+      summary: The store and permissions of the key in use
+      operationId: getKey
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      store_id: { type: string, format: uuid }
+                      kind: { type: string, enum: [public, private] }
+                      scopes: { type: array, items: { $ref: "#/components/schemas/Scope" } }
+        default: { $ref: "#/components/responses/Error" }
+
+  # ── Catalogue ───────────────────────────────────────────────────────────
+  /products:
+    get:
+      tags: [Catalogue]
+      summary: List products
+      operationId: listProducts
+      x-scope: catalog:read
+      parameters:
+        - { name: category, in: query, schema: { type: string }, description: Category slug; includes sub-categories. }
+        - { name: brand, in: query, schema: { type: string }, description: Brand slug. }
+        - { name: q, in: query, schema: { type: string }, description: Search text (same matching as the store's search). }
+        - { name: ids, in: query, schema: { type: string }, description: "Comma-separated product IDs (at most 100)." }
+        - { name: price_min, in: query, schema: { type: integer, minimum: 0 }, description: Minor units of the shown currency. }
+        - { name: price_max, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: in_stock, in: query, schema: { type: string, enum: ["true"] } }
+        - { name: featured, in: query, schema: { type: string, enum: ["true"] } }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [featured, newest, price_asc, price_desc, name, rating, discount], default: featured }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Currency"
+        - $ref: "#/components/parameters/Locale"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Product" } }
+                  page: { $ref: "#/components/schemas/Page" }
+        default: { $ref: "#/components/responses/Error" }
+  /products/{id}:
+    get:
+      tags: [Catalogue]
+      summary: One product
+      operationId: getProduct
+      x-scope: catalog:read
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+        - $ref: "#/components/parameters/Currency"
+        - $ref: "#/components/parameters/Locale"
+      responses:
+        "200": { $ref: "#/components/responses/ProductDetail" }
+        default: { $ref: "#/components/responses/Error" }
+  /products/by-slug/{slug}:
+    get:
+      tags: [Catalogue]
+      summary: One product by its slug
+      operationId: getProductBySlug
+      x-scope: catalog:read
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/Currency"
+        - $ref: "#/components/parameters/Locale"
+      responses:
+        "200": { $ref: "#/components/responses/ProductDetail" }
+        default: { $ref: "#/components/responses/Error" }
+  /products/{id}/related:
+    get:
+      tags: [Catalogue]
+      summary: Related products (hand-picked first, then featured)
+      operationId: listRelatedProducts
+      x-scope: catalog:read
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 24, default: 8 } }
+        - $ref: "#/components/parameters/Currency"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Product" } }
+        default: { $ref: "#/components/responses/Error" }
+  /products/{id}/reviews:
+    get:
+      tags: [Catalogue]
+      summary: Approved reviews, newest first
+      operationId: listProductReviews
+      x-scope: catalog:read
+      parameters:
+        - $ref: "#/components/parameters/ProductID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        rating: { type: integer, minimum: 1, maximum: 5 }
+                        title: { type: [string, "null"] }
+                        body: { type: [string, "null"] }
+                        author: { type: [string, "null"] }
+                        verified_purchase: { type: boolean }
+                        created_at: { type: [string, "null"], format: date-time }
+                  page: { $ref: "#/components/schemas/Page" }
+        default: { $ref: "#/components/responses/Error" }
+  /categories:
+    get:
+      tags: [Catalogue]
+      summary: The category tree
+      operationId: listCategories
+      x-scope: catalog:read
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/CategoryNode" } }
+        default: { $ref: "#/components/responses/Error" }
+  /categories/{id}:
+    get:
+      tags: [Catalogue]
+      summary: One category (by id or slug) with its direct children
+      operationId: getCategory
+      x-scope: catalog:read
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: Numeric id or slug. }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/CategoryNode" }
+        default: { $ref: "#/components/responses/Error" }
+  /brands:
+    get:
+      tags: [Catalogue]
+      summary: Active brands, featured first
+      operationId: listBrands
+      x-scope: catalog:read
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        slug: { type: [string, "null"] }
+                        description: { type: [string, "null"] }
+                        website: { type: [string, "null"] }
+                        featured: { type: boolean }
+                        logo_url: { type: [string, "null"] }
+                        product_count: { type: integer }
+        default: { $ref: "#/components/responses/Error" }
+
+  # ── Content ─────────────────────────────────────────────────────────────
+  /store:
+    get:
+      tags: [Content]
+      summary: Store details, branding and contact
+      operationId: getStore
+      x-scope: content:read
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Store" }
+        default: { $ref: "#/components/responses/Error" }
+  /menus/{menu}:
+    get:
+      tags: [Content]
+      summary: The merchant's header (main) or footer menu
+      operationId: getMenu
+      x-scope: content:read
+      parameters:
+        - { name: menu, in: path, required: true, schema: { type: string, enum: [main, footer] } }
+      responses:
+        "200":
+          description: OK ([] when the store has not built one)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/MenuLink" } }
+        default: { $ref: "#/components/responses/Error" }
+  /pages:
+    get:
+      tags: [Content]
+      summary: Published pages
+      operationId: listPages
+      x-scope: content:read
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        title: { type: string }
+                        slug: { type: string }
+                        policy_type: { type: [string, "null"], description: "privacy, refund, shipping, terms…" }
+                        in_footer: { type: boolean }
+                        updated_at: { type: [string, "null"], format: date-time }
+                        url: { type: [string, "null"] }
+        default: { $ref: "#/components/responses/Error" }
+  /pages/{slug}:
+    get:
+      tags: [Content]
+      summary: One page (plain text, plus paragraphs as the store prints them)
+      operationId: getPage
+      x-scope: content:read
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      title: { type: string }
+                      slug: { type: string }
+                      policy_type: { type: [string, "null"] }
+                      content: { type: string }
+                      paragraphs: { type: array, items: { type: string } }
+                      updated_at: { type: [string, "null"], format: date-time }
+                      url: { type: [string, "null"] }
+        default: { $ref: "#/components/responses/Error" }
+  /banners:
+    get:
+      tags: [Content]
+      summary: Live banners in the merchant's order
+      operationId: listBanners
+      x-scope: content:read
+      parameters:
+        - name: placement
+          in: query
+          schema: { type: string, enum: [announcement, home_top, home_below_hero, home_middle, home_bottom, catalogue_top, category_top, product_top] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        placement: { type: string }
+                        title: { type: [string, "null"] }
+                        subtitle: { type: [string, "null"] }
+                        link_url: { type: [string, "null"] }
+                        link_label: { type: [string, "null"] }
+                        image_url: { type: [string, "null"] }
+        default: { $ref: "#/components/responses/Error" }
+
+  # ── Cart ────────────────────────────────────────────────────────────────
+  /carts:
+    post:
+      tags: [Cart]
+      summary: Create a cart
+      description: |
+        Returns the cart with its `token` (shown only here). Send it as
+        `X-Estackly-Cart-Token` on every later call. Send a signed-in
+        customer's `X-Estackly-Customer-Token` to record whose cart it is.
+      operationId: createCart
+      x-scope: cart:write
+      parameters:
+        - $ref: "#/components/parameters/Currency"
+        - { name: X-Estackly-Customer-Token, in: header, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lines: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/LineInput" } }
+      responses:
+        "201": { $ref: "#/components/responses/Cart" }
+        default: { $ref: "#/components/responses/Error" }
+  /carts/{cart}:
+    get:
+      tags: [Cart]
+      summary: Read a cart (lines no longer for sale drop out)
+      operationId: getCart
+      x-scope: cart:write
+      parameters:
+        - $ref: "#/components/parameters/CartID"
+        - $ref: "#/components/parameters/CartToken"
+        - $ref: "#/components/parameters/Currency"
+      responses:
+        "200": { $ref: "#/components/responses/Cart" }
+        default: { $ref: "#/components/responses/Error" }
+  /carts/{cart}/lines:
+    post:
+      tags: [Cart]
+      summary: Add a line (the same product + variant + message adds to it)
+      operationId: addCartLine
+      x-scope: cart:write
+      parameters:
+        - $ref: "#/components/parameters/CartID"
+        - $ref: "#/components/parameters/CartToken"
+        - $ref: "#/components/parameters/Currency"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/LineInput"
+                - type: object
+                  properties:
+                    cart_version: { type: integer }
+      responses:
+        "200": { $ref: "#/components/responses/Cart" }
+        default: { $ref: "#/components/responses/Error" }
+  /carts/{cart}/lines/{line}:
+    patch:
+      tags: [Cart]
+      summary: Change a line's quantity (0 removes it)
+      operationId: updateCartLine
+      x-scope: cart:write
+      parameters:
+        - $ref: "#/components/parameters/CartID"
+        - $ref: "#/components/parameters/LineKey"
+        - $ref: "#/components/parameters/CartToken"
+        - $ref: "#/components/parameters/Currency"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity: { type: integer, minimum: 0, maximum: 99 }
+                cart_version: { type: integer }
+      responses:
+        "200": { $ref: "#/components/responses/Cart" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [Cart]
+      summary: Remove a line
+      operationId: removeCartLine
+      x-scope: cart:write
+      parameters:
+        - $ref: "#/components/parameters/CartID"
+        - $ref: "#/components/parameters/LineKey"
+        - $ref: "#/components/parameters/CartToken"
+      responses:
+        "200": { $ref: "#/components/responses/Cart" }
+        default: { $ref: "#/components/responses/Error" }
+  /carts/{cart}/coupon:
+    post:
+      tags: [Cart]
+      summary: Apply a discount code (a refused code is not kept → 422 coupon_invalid)
+      operationId: applyCoupon
+      x-scope: cart:write
+      parameters:
+        - $ref: "#/components/parameters/CartID"
+        - $ref: "#/components/parameters/CartToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, maxLength: 64 }
+                cart_version: { type: integer }
+      responses:
+        "200": { $ref: "#/components/responses/Cart" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [Cart]
+      summary: Remove the discount code
+      operationId: removeCoupon
+      x-scope: cart:write
+      parameters:
+        - $ref: "#/components/parameters/CartID"
+        - $ref: "#/components/parameters/CartToken"
+      responses:
+        "200": { $ref: "#/components/responses/Cart" }
+        default: { $ref: "#/components/responses/Error" }
+  /carts/{cart}/shipping-estimate:
+    post:
+      tags: [Cart]
+      summary: Price the cart for an address, with its shipping options (not saved)
+      operationId: estimateShipping
+      x-scope: cart:write
+      parameters:
+        - $ref: "#/components/parameters/CartID"
+        - $ref: "#/components/parameters/CartToken"
+        - $ref: "#/components/parameters/Currency"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [country]
+              properties:
+                country: { type: string, minLength: 2, maxLength: 2, examples: [IN, US, GB] }
+                region: { type: string }
+                postcode: { type: string }
+                rate_id: { type: integer }
+      responses:
+        "200": { $ref: "#/components/responses/Cart" }
+        default: { $ref: "#/components/responses/Error" }
+
+  # ── Checkout ────────────────────────────────────────────────────────────
+  /carts/{cart}/checkout:
+    post:
+      tags: [Checkout]
+      summary: Get a one-time link to the store's checkout for this cart
+      description: |
+        Open `checkout_url` in a browser (valid one hour, one use). It fills
+        that browser's basket with the cart and opens the normal checkout.
+      operationId: startCheckout
+      x-scope: checkout:write
+      parameters:
+        - $ref: "#/components/parameters/CartID"
+        - $ref: "#/components/parameters/CartToken"
+        - $ref: "#/components/parameters/Currency"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cart_version: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      checkout_url: { type: string, format: uri }
+                      expires_at: { type: string, format: date-time }
+        default: { $ref: "#/components/responses/Error" }
+
+  # ── Customers ───────────────────────────────────────────────────────────
+  /customers:
+    post:
+      tags: [Customers]
+      summary: Sign a customer up (the store's verify + welcome emails go out)
+      operationId: registerCustomer
+      x-scope: customer:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string, maxLength: 120 }
+                email: { type: string, format: email }
+                phone: { type: string, maxLength: 32 }
+                password: { type: string, minLength: 8, maxLength: 72 }
+                marketing_opt_in: { type: boolean }
+      responses:
+        "201": { $ref: "#/components/responses/SignedIn" }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/login:
+    post:
+      tags: [Customers]
+      summary: Sign in with email and password (10 failures per email in 15 minutes → 429)
+      operationId: loginCustomer
+      x-scope: customer:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/SignedIn" }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/logout:
+    post:
+      tags: [Customers]
+      summary: End this customer token
+      operationId: logoutCustomer
+      x-scope: customer:write
+      parameters: [{ $ref: "#/components/parameters/CustomerToken" }]
+      responses:
+        "204": { description: Signed out }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/me:
+    get:
+      tags: [Customers]
+      summary: The signed-in customer
+      operationId: getMe
+      x-scope: customer:write
+      parameters: [{ $ref: "#/components/parameters/CustomerToken" }]
+      responses:
+        "200": { $ref: "#/components/responses/Customer" }
+        default: { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [Customers]
+      summary: Change name or phone (email cannot change here)
+      operationId: updateMe
+      x-scope: customer:write
+      parameters: [{ $ref: "#/components/parameters/CustomerToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 120 }
+                phone: { type: [string, "null"], maxLength: 32 }
+      responses:
+        "200": { $ref: "#/components/responses/Customer" }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/me/password:
+    post:
+      tags: [Customers]
+      summary: Change the password (signs the customer's other API sessions out)
+      operationId: changePassword
+      x-scope: customer:write
+      parameters: [{ $ref: "#/components/parameters/CustomerToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, password]
+              properties:
+                current_password: { type: string }
+                password: { type: string, minLength: 8, maxLength: 72 }
+      responses:
+        "200": { description: Changed }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/me/addresses:
+    get:
+      tags: [Customers]
+      summary: Saved addresses (default first; all in the store's country)
+      operationId: listAddresses
+      x-scope: customer:write
+      parameters: [{ $ref: "#/components/parameters/CustomerToken" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Address" } }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [Customers]
+      summary: Add an address
+      operationId: addAddress
+      x-scope: customer:write
+      parameters: [{ $ref: "#/components/parameters/CustomerToken" }]
+      requestBody: { $ref: "#/components/requestBodies/Address" }
+      responses:
+        "201": { $ref: "#/components/responses/Address" }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/me/addresses/{id}:
+    patch:
+      tags: [Customers]
+      summary: Replace an address (send the full address)
+      operationId: updateAddress
+      x-scope: customer:write
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: "#/components/parameters/CustomerToken"
+      requestBody: { $ref: "#/components/requestBodies/Address" }
+      responses:
+        "200": { $ref: "#/components/responses/Address" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [Customers]
+      summary: Delete an address (the next one becomes the default)
+      operationId: deleteAddress
+      x-scope: customer:write
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: "#/components/parameters/CustomerToken"
+      responses:
+        "204": { description: Deleted }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/me/orders:
+    get:
+      tags: [Customers]
+      summary: Order history, newest first
+      operationId: listOrders
+      x-scope: customer:write
+      parameters:
+        - $ref: "#/components/parameters/CustomerToken"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        number: { type: string }
+                        status: { $ref: "#/components/schemas/OrderStatus" }
+                        payment_status: { type: string }
+                        placed_at: { type: [string, "null"], format: date-time }
+                        grand_total: { $ref: "#/components/schemas/Money" }
+                        item_count: { type: integer }
+                  page: { $ref: "#/components/schemas/Page" }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/me/orders/{number}:
+    get:
+      tags: [Customers]
+      summary: One order with items, totals, address and tracking
+      operationId: getOrder
+      x-scope: customer:write
+      parameters:
+        - { name: number, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/CustomerToken"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Order" }
+        default: { $ref: "#/components/responses/Error" }
+  /customers/me/wishlist:
+    get:
+      tags: [Customers]
+      summary: Saved products still for sale
+      operationId: getWishlist
+      x-scope: customer:write
+      parameters: [{ $ref: "#/components/parameters/CustomerToken" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Product" } }
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      tags: [Customers]
+      summary: Replace the wishlist (unknown products are dropped; at most 200)
+      operationId: putWishlist
+      x-scope: customer:write
+      parameters: [{ $ref: "#/components/parameters/CustomerToken" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_ids]
+              properties:
+                product_ids: { type: array, items: { type: integer } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Product" } }
+        default: { $ref: "#/components/responses/Error" }
+
+  # ── Webhooks ────────────────────────────────────────────────────────────
+  /webhooks:
+    get:
+      tags: [Manage webhooks]
+      summary: List webhooks
+      operationId: listWebhooks
+      x-scope: webhooks:write
+      security: [{ privateKey: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Webhook" } }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [Manage webhooks]
+      summary: Add a webhook (the signing secret is shown only here)
+      operationId: createWebhook
+      x-scope: webhooks:write
+      security: [{ privateKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, topics]
+              properties:
+                url: { type: string, format: uri, description: A public https:// address. }
+                topics: { type: array, minItems: 1, items: { $ref: "#/components/schemas/WebhookTopic" } }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: "#/components/schemas/Webhook"
+                      - type: object
+                        properties:
+                          secret: { type: string, examples: [whsec_…] }
+        default: { $ref: "#/components/responses/Error" }
+  /webhooks/{id}:
+    patch:
+      tags: [Manage webhooks]
+      summary: Change a webhook (active true switches a disabled one back on)
+      operationId: updateWebhook
+      x-scope: webhooks:write
+      security: [{ privateKey: [] }]
+      parameters: [{ $ref: "#/components/parameters/WebhookID" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string, format: uri }
+                topics: { type: array, items: { $ref: "#/components/schemas/WebhookTopic" } }
+                active: { type: boolean }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Webhook" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [Manage webhooks]
+      summary: Delete a webhook
+      operationId: deleteWebhook
+      x-scope: webhooks:write
+      security: [{ privateKey: [] }]
+      parameters: [{ $ref: "#/components/parameters/WebhookID" }]
+      responses:
+        "204": { description: Deleted }
+        default: { $ref: "#/components/responses/Error" }
+  /webhooks/{id}/deliveries:
+    get:
+      tags: [Manage webhooks]
+      summary: The last 50 deliveries
+      operationId: listWebhookDeliveries
+      x-scope: webhooks:write
+      security: [{ privateKey: [] }]
+      parameters: [{ $ref: "#/components/parameters/WebhookID" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        topic: { type: string }
+                        event_id: { type: string }
+                        status: { type: string, enum: [pending, succeeded, failed] }
+                        attempts: { type: integer }
+                        response_status: { type: [integer, "null"] }
+                        error: { type: [string, "null"] }
+                        next_attempt_at: { type: [string, "null"], format: date-time }
+                        delivered_at: { type: [string, "null"], format: date-time }
+                        created_at: { type: string, format: date-time }
+        default: { $ref: "#/components/responses/Error" }
+  /webhooks/{id}/test:
+    post:
+      tags: [Manage webhooks]
+      summary: Send a ping delivery now
+      operationId: testWebhook
+      x-scope: webhooks:write
+      security: [{ privateKey: [] }]
+      parameters: [{ $ref: "#/components/parameters/WebhookID" }]
+      responses:
+        "202":
+          description: Queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      delivery_id: { type: integer }
+                      event_id: { type: string }
+        default: { $ref: "#/components/responses/Error" }
+
+webhooks:
+  event:
+    post:
+      summary: A store event (sent to each subscribed webhook URL)
+      description: |
+        Verify `Estackly-Signature: t=<unix>,v1=<hex>` as
+        HMAC-SHA256(secret, "<t>.<raw body>") and reject old timestamps.
+        Answer 2xx within 10 seconds. Anything else is retried after 1m, 5m,
+        15m, 30m, 1h, 2h, 4h, 6h and 8h; 15 deliveries in a row that give up
+        switch the webhook off. Deliveries can repeat: de-duplicate on `id`.
+      parameters:
+        - { name: Estackly-Topic, in: header, schema: { $ref: "#/components/schemas/WebhookTopic" } }
+        - { name: Estackly-Event-Id, in: header, schema: { type: string } }
+        - { name: Estackly-Delivery-Id, in: header, schema: { type: string } }
+        - { name: Estackly-Signature, in: header, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string, examples: [evt_123] }
+                topic: { $ref: "#/components/schemas/WebhookTopic" }
+                created_at: { type: string, format: date-time }
+                store_id: { type: string, format: uuid }
+                data:
+                  description: The order, product or customer as it was when the event was sent ({id} for product.deleted).
+                  type: object
+      responses:
+        "200": { description: Received }
+
+components:
+  securitySchemes:
+    publicKey:
+      type: apiKey
+      in: header
+      name: X-Estackly-Storefront-Token
+    privateKey:
+      type: http
+      scheme: bearer
+      description: An esk_prv_ key, from a server only.
+
+  parameters:
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+    Cursor: { name: cursor, in: query, schema: { type: string }, description: page.next_cursor from the previous page. }
+    Currency:
+      name: currency
+      in: query
+      schema: { type: string, examples: [USD] }
+      description: One of the store's selling currencies (also X-Estackly-Currency). Default the store's base currency.
+    Locale:
+      name: locale
+      in: query
+      schema: { type: string }
+      description: One of the store's locales (Accept-Language is used too). Default the store's first locale.
+    ProductID: { name: id, in: path, required: true, schema: { type: integer } }
+    CartID: { name: cart, in: path, required: true, schema: { type: string, examples: [crt_abc] } }
+    LineKey: { name: line, in: path, required: true, schema: { type: string, examples: ["137:37"] } }
+    CartToken: { name: X-Estackly-Cart-Token, in: header, required: true, schema: { type: string } }
+    CustomerToken: { name: X-Estackly-Customer-Token, in: header, required: true, schema: { type: string } }
+    WebhookID: { name: id, in: path, required: true, schema: { type: integer } }
+
+  requestBodies:
+    Address:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, phone, line1, city, postal_code]
+            properties:
+              label: { type: string, maxLength: 40 }
+              name: { type: string, maxLength: 120 }
+              phone: { type: string, maxLength: 32 }
+              line1: { type: string, maxLength: 255 }
+              line2: { type: string, maxLength: 255 }
+              city: { type: string, maxLength: 120 }
+              state: { type: string, maxLength: 120, description: Required where the country has states. }
+              postal_code: { type: string, maxLength: 16 }
+              is_default: { type: boolean }
+
+  responses:
+    Error:
+      description: An error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ProductDetail:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: "#/components/schemas/ProductDetail" }
+    Cart:
+      description: The cart, priced
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: "#/components/schemas/Cart" }
+    SignedIn:
+      description: Signed in
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                type: object
+                properties:
+                  customer: { $ref: "#/components/schemas/Customer" }
+                  customer_access_token: { type: string }
+                  expires_at: { type: string, format: date-time }
+    Customer:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: "#/components/schemas/Customer" }
+    Address:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: "#/components/schemas/Address" }
+
+  schemas:
+    Scope:
+      type: string
+      enum: [catalog:read, content:read, cart:write, customer:write, checkout:write, webhooks:write]
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              examples: [missing_key, invalid_key, key_revoked, scope_missing, origin_not_allowed, store_inactive, not_found,
+                bad_request, invalid_cursor, validation_failed, out_of_stock, coupon_invalid, cart_changed, cart_empty,
+                currency_not_sold, locale_not_available, invalid_credentials, customer_token_invalid, rate_limited, internal]
+            message: { type: string }
+            fields: { type: object, additionalProperties: { type: array, items: { type: string } } }
+            request_id: { type: string }
+    Money:
+      type: object
+      properties:
+        amount_minor: { type: integer, examples: [179900] }
+        currency: { type: string, examples: [INR] }
+        formatted: { type: [string, "null"], examples: ["₹1,799.00"] }
+    Page:
+      type: object
+      properties:
+        next_cursor: { type: [string, "null"] }
+        has_more: { type: boolean }
+        total: { type: integer }
+    Variant:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        options: { type: object, additionalProperties: { type: string }, examples: [{ Size: M }] }
+        price: { $ref: "#/components/schemas/Money" }
+        compare_at_price: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
+        in_stock: { type: boolean }
+        available_quantity: { type: [integer, "null"] }
+        image_url: { type: [string, "null"] }
+    Product:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: [string, "null"] }
+        sku: { type: [string, "null"] }
+        brand: { type: [object, "null"], properties: { name: { type: string }, slug: { type: [string, "null"] } } }
+        category: { type: [string, "null"] }
+        price: { $ref: "#/components/schemas/Money" }
+        compare_at_price: { oneOf: [{ $ref: "#/components/schemas/Money" }, { type: "null" }] }
+        sale_ends_at: { type: [string, "null"], format: date-time }
+        in_stock: { type: boolean }
+        available_quantity: { type: [integer, "null"], description: null = not counted. }
+        min_order_quantity: { type: integer }
+        max_order_quantity: { type: [integer, "null"] }
+        max_per_customer: { type: [integer, "null"] }
+        is_digital: { type: boolean }
+        rating: { type: [object, "null"], properties: { average: { type: number }, count: { type: integer } } }
+        image_url: { type: [string, "null"] }
+        images:
+          type: array
+          items:
+            type: object
+            properties:
+              url: { type: string }
+              thumb_url: { type: string }
+              options: { type: object, additionalProperties: { type: string } }
+        variants: { type: array, items: { $ref: "#/components/schemas/Variant" } }
+        url: { type: [string, "null"], description: The product page on the store. }
+    ProductDetail:
+      allOf:
+        - $ref: "#/components/schemas/Product"
+        - type: object
+          properties:
+            description_html: { type: [string, "null"] }
+            summary: { type: [string, "null"] }
+            meta_title: { type: [string, "null"] }
+            meta_description: { type: [string, "null"] }
+            barcode: { type: [string, "null"] }
+            country_of_origin: { type: [string, "null"] }
+    CategoryNode:
+      type: object
+      properties:
+        id: { type: integer }
+        parent_id: { type: [integer, "null"] }
+        name: { type: string }
+        slug: { type: [string, "null"] }
+        description: { type: [string, "null"] }
+        image_url: { type: [string, "null"] }
+        product_count: { type: integer, description: Includes sub-categories. }
+        meta_title: { type: [string, "null"] }
+        meta_description: { type: [string, "null"] }
+        url: { type: [string, "null"] }
+        children: { type: array, items: { $ref: "#/components/schemas/CategoryNode" } }
+    Store:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        tagline: { type: [string, "null"] }
+        url: { type: [string, "null"] }
+        logo_url: { type: [string, "null"] }
+        favicon_url: { type: [string, "null"] }
+        colors: { type: object, properties: { primary: { type: string }, accent: { type: string } } }
+        theme: { type: [string, "null"] }
+        country: { type: string }
+        locale: { type: string }
+        locales: { type: array, items: { type: string } }
+        base_currency: { type: string }
+        currencies: { type: array, items: { type: string } }
+        contact:
+          type: object
+          properties:
+            email: { type: [string, "null"] }
+            phone: { type: [string, "null"] }
+            whatsapp: { type: [string, "null"] }
+            address: { type: [string, "null"] }
+            support_hours: { type: [string, "null"] }
+        social: { type: object, additionalProperties: { type: string } }
+        policies:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              title: { type: string }
+              slug: { type: string }
+              url: { type: [string, "null"] }
+        test_mode: { type: boolean }
+    MenuLink:
+      type: object
+      properties:
+        label: { type: string }
+        type: { type: string, enum: [home, products, cart, category, product, page, url, heading] }
+        slug: { type: [string, "null"] }
+        url: { type: [string, "null"] }
+        new_tab: { type: boolean }
+        children: { type: array, items: { $ref: "#/components/schemas/MenuLink" } }
+    LineInput:
+      type: object
+      required: [product_id]
+      properties:
+        product_id: { type: integer }
+        variant_id: { type: integer, description: Required when the product has options. }
+        quantity: { type: integer, minimum: 1, maximum: 99, default: 1 }
+        message: { type: string, description: The personalised message, for products that take one. }
+    Cart:
+      type: object
+      properties:
+        id: { type: string }
+        token: { type: string, description: Only when the cart is created. }
+        version: { type: integer, description: Send as cart_version to refuse a write if the cart changed meanwhile. }
+        currency: { type: string }
+        item_count: { type: integer }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              product_id: { type: integer }
+              variant_id: { type: [integer, "null"] }
+              name: { type: string }
+              sku: { type: [string, "null"] }
+              image_url: { type: [string, "null"] }
+              quantity: { type: integer }
+              max_quantity: { type: integer }
+              unit_price: { $ref: "#/components/schemas/Money" }
+              line_total: { $ref: "#/components/schemas/Money" }
+              message: { type: [string, "null"] }
+              message_label: { type: [string, "null"] }
+              is_digital: { type: boolean }
+        coupon:
+          type: [object, "null"]
+          properties:
+            code: { type: [string, "null"] }
+            accepted: { type: boolean }
+            automatic: { type: boolean }
+            message: { type: [string, "null"] }
+        totals:
+          type: object
+          properties:
+            subtotal: { $ref: "#/components/schemas/Money" }
+            discount: { $ref: "#/components/schemas/Money" }
+            shipping: { $ref: "#/components/schemas/Money" }
+            tax_lines:
+              type: array
+              items:
+                type: object
+                properties:
+                  label: { type: string }
+                  rate: { type: string }
+                  amount: { $ref: "#/components/schemas/Money" }
+                  included: { type: boolean }
+            grand_total: { $ref: "#/components/schemas/Money" }
+            requires_shipping: { type: boolean }
+            shipping_pending: { type: boolean, description: Shipping depends on an address not given yet. }
+            tax_pending: { type: boolean }
+        shipping:
+          description: Only on a shipping estimate.
+          type: object
+          properties:
+            available: { type: boolean }
+            selected_rate_id: { type: [integer, "null"] }
+            rates:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: [integer, "null"] }
+                  name: { type: string }
+                  fee: { $ref: "#/components/schemas/Money" }
+                  eta: { type: [string, "null"] }
+                  pickup: { type: boolean }
+        warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string, enum: [quantity_capped] }
+              line: { type: string }
+              quantity: { type: integer }
+              message: { type: string }
+        expires_at: { type: string, format: date-time }
+    Customer:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        phone: { type: [string, "null"] }
+        email_verified: { type: boolean }
+        created_at: { type: [string, "null"], format: date-time }
+    Address:
+      type: object
+      properties:
+        id: { type: integer }
+        label: { type: [string, "null"] }
+        name: { type: string }
+        phone: { type: string }
+        line1: { type: string }
+        line2: { type: [string, "null"] }
+        city: { type: string }
+        state: { type: [string, "null"] }
+        postal_code: { type: string }
+        country: { type: string }
+        is_default: { type: boolean }
+    OrderStatus:
+      type: string
+      enum: [pending, confirmed, processing, shipped, delivered, cancelled, returned]
+    Order:
+      type: object
+      properties:
+        number: { type: string }
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        payment_method: { type: string }
+        payment_status: { type: string, enum: [pending, paid, partially_refunded, refunded, failed] }
+        placed_at: { type: [string, "null"], format: date-time }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              product_id: { type: [integer, "null"] }
+              variant_id: { type: [integer, "null"] }
+              name: { type: string }
+              sku: { type: [string, "null"] }
+              quantity: { type: integer }
+              unit_price: { $ref: "#/components/schemas/Money" }
+              line_total: { $ref: "#/components/schemas/Money" }
+              is_digital: { type: boolean }
+              message: { type: [string, "null"] }
+        totals:
+          type: object
+          properties:
+            subtotal: { $ref: "#/components/schemas/Money" }
+            discount: { $ref: "#/components/schemas/Money" }
+            shipping: { $ref: "#/components/schemas/Money" }
+            tax: { $ref: "#/components/schemas/Money" }
+            tax_included: { $ref: "#/components/schemas/Money" }
+            grand_total: { $ref: "#/components/schemas/Money" }
+        shipping_method: { type: [string, "null"] }
+        shipping_address:
+          type: [object, "null"]
+          properties:
+            name: { type: [string, "null"] }
+            line1: { type: [string, "null"] }
+            line2: { type: [string, "null"] }
+            city: { type: [string, "null"] }
+            state: { type: [string, "null"] }
+            postal_code: { type: [string, "null"] }
+            country_code: { type: [string, "null"] }
+            phone: { type: [string, "null"] }
+        delivery: { type: [object, "null"], properties: { date: { type: string, format: date }, slot: { type: [string, "null"] } } }
+        shipments:
+          type: array
+          items:
+            type: object
+            properties:
+              status: { type: string }
+              courier: { type: [string, "null"] }
+              tracking_number: { type: [string, "null"] }
+              tracking_url: { type: [string, "null"] }
+              shipped_at: { type: [string, "null"], format: date-time }
+              delivered_at: { type: [string, "null"], format: date-time }
+    WebhookTopic:
+      type: string
+      enum: [order.created, order.updated, order.paid, order.shipped, order.delivered, order.cancelled, order.refunded,
+        product.created, product.updated, product.deleted, customer.created, ping]
+    Webhook:
+      type: object
+      properties:
+        id: { type: integer }
+        url: { type: string }
+        topics: { type: array, items: { $ref: "#/components/schemas/WebhookTopic" } }
+        active: { type: boolean }
+        disabled_reason: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
